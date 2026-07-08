@@ -1,61 +1,74 @@
 import time
 import uuid
-import logging
 import json
+import logging
 from collections import deque
+
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
+
 app = FastAPI()
 
+# Track startup time
 START_TIME = time.time()
 
-http_requests_total = Counter(
-    "http_requests_total",
-    "Total HTTP requests",
+# Prometheus counter
+# Exposed automatically as http_requests_total
+REQUEST_COUNTER = Counter(
+    "http_requests",
+    "Total number of HTTP requests"
 )
 
-logs = deque(maxlen=1000)
+# Store recent logs
+LOG_BUFFER = deque(maxlen=1000)
 
 
-class JSONFormatter(logging.Formatter):
+# JSON logger setup
+class JsonFormatter(logging.Formatter):
     def format(self, record):
         return json.dumps(record.msg)
 
 
-logger = logging.getLogger("json_logger")
+logger = logging.getLogger("request_logger")
 logger.setLevel(logging.INFO)
 
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
 
+
+# Middleware for metrics + structured logs
 @app.middleware("http")
-async def logging_middleware(request: Request, call_next):
+async def request_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())
+
+    # Count every request
+    REQUEST_COUNTER.inc()
 
     response = await call_next(request)
 
-    entry = {
+    log_entry = {
         "level": "INFO",
         "ts": time.time(),
         "path": request.url.path,
-        "request_id": request_id,
+        "request_id": request_id
     }
 
-    logs.append(entry)
-    logger.info(entry)
+    # Save log entry
+    LOG_BUFFER.append(log_entry)
+
+    # Write JSON log
+    logger.info(log_entry)
 
     return response
 
 
-@app.middleware("http")
-async def metrics_middleware(request: Request, call_next):
-    http_requests_total.inc()
-    response = await call_next(request)
-    return response
-
-
+# Work endpoint
 @app.get("/work")
 def work(n: int = 1):
+    # Simulate K units of work
     for _ in range(n):
         pass
 
@@ -65,14 +78,16 @@ def work(n: int = 1):
     }
 
 
+# Prometheus metrics endpoint
 @app.get("/metrics")
 def metrics():
     return Response(
-        generate_latest(),
+        content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST
     )
 
 
+# Health check endpoint
 @app.get("/healthz")
 def healthz():
     return {
@@ -81,6 +96,7 @@ def healthz():
     }
 
 
+# Logs endpoint
 @app.get("/logs/tail")
 def logs_tail(limit: int = 10):
-    return list(logs)[-limit:]
+    return list(LOG_BUFFER)[-limit:]
